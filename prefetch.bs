@@ -112,7 +112,7 @@ spec: html; urlPrefix: https://html.spec.whatwg.org/multipage/
       text: cross-origin prefetch IP anonymization policy; url: cross-origin-prefetch-ip-anonymization-policy
       text: prefetch candidate; url: prefetch-candidate
       text: prefetch IP anonymization policy; url: prefetch-ip-anonymization-policy
-      text: prerender candidate; url: prerender-candidate
+      text: speculation rule eagerness; url: speculation-rule-eagerness
       text: speculation rule tag; url: speculation-rule-tag
       text: speculative load candidate; url: speculative-load-candidate
       for: cross-origin prefetch IP anonymization policy
@@ -142,8 +142,9 @@ spec: COOKIES; urlPrefix: https://httpwg.org/specs/rfc6265.html
 spec: prerendering-revamped; urlPrefix: prerendering.html
   type: dfn
     text: getting the supported loading modes; url: get-the-supported-loading-modes
-    text: prerendering navigable; url: prerendering-navigable
-    text: prerendering traversable; url: prerendering-traversable
+    text: prerendering navigable
+    text: prerendering traversable
+    text: prerender candidate
 spec: no-vary-search; urlPrefix: https://httpwg.org/http-extensions/draft-ietf-httpbis-no-vary-search.html
   type: dfn
     text: URL search variance; url: name-data-model
@@ -309,22 +310,32 @@ The user agent may [=prefetch record/cancel and discard=] records from the [=Doc
     To <dfn export>wait for a matching prefetch record</dfn> given a [=top-level traversable=] |navigable|, [=source snapshot params=] |sourceSnapshotParams|, and [=URL=] |url|:
 
     1. [=Assert=]: this is running [=in parallel=].
-    1. Let |cutoffTime| be null.
-    1. While true:
-        1. Let |completeRecord| be the result of [=finding a matching complete prefetch record=] given |navigable|, |sourceSnapshotParams|, and |url|.
-        1. If |completeRecord| is not null, return |completeRecord|.
-        1. Let |potentialRecords| be an empty [=list=].
-        1. [=list/For each=] |record| of |sourceSnapshotParams|'s [=source snapshot params/prefetch records=]:
-            1. If all of the following are true, then [=list/append=] |record| to |potentialRecords|:
-                * |record|'s [=prefetch record/state=] is "`ongoing`".
-                * |record| [=prefetch record/is expected to match a URL=] given |url|.
-                * |record|'s [=prefetch record/expiry time=] is greater than the [=current high resolution time=] for |navigable|'s [=navigable/active window=].
-                * |cutoffTime| is null or |record|'s [=prefetch record/start time=] is less than |cutoffTime|.
-        1. If |potentialRecords| [=list/is empty=], return null.
-        1. Wait until the [=prefetch record/state=] of any element of |sourceSnapshotParams|'s [=source snapshot params/prefetch records=] changes.
-        1. If |cutoffTime| is null and any element of |potentialRecords| has a [=prefetch record/state=] that is not "`ongoing`", set |cutoffTime| to the [=current high resolution time=] for |navigable|'s [=navigable/active window=].
+    1. Let |timeout| be null.
+    1. Optionally, set |timeout| to an [=implementation-defined=] duration representing the maximum time the implementation is willing to wait for an ongoing prefetch to respond, before it gives up and restarts the navigation.
+       <p class="note" id="note-wait-for-matching-prefetch-record-timeout">Choosing a good timeout is difficult, and might depend on the exact initiator of the navigation or the prefetch (e.g., its [=speculation rule eagerness=], or whether it will be used for a prerender). In general, a timeout is best avoided, as it is rare that restarting the navigation as a non-prefetch will give a better result than awaiting the ongoing prefetch. But some implementations have found that in some situations, a timeout on the order of seconds can give better results.</p>
+    1. Let |startTime| be the [=unsafe shared current time=].
+    1. Run these steps, but [=abort when=] |timeout| is not null and the [=unsafe shared current time=] &minus; |startTime| is greater than |timeout|:
+      1. While true:
+          1. Let |completeRecord| be the result of [=finding a matching complete prefetch record=] given |navigable|, |sourceSnapshotParams|, and |url|.
+          1. If |completeRecord| is not null, return |completeRecord|.
+          1. Let |potentialRecords| be an empty [=list=].
+          1. [=list/For each=] |record| of |sourceSnapshotParams|'s [=source snapshot params/prefetch records=]:
+              1. If all of the following are true:
+                  * |record|'s [=prefetch record/state=] is "`ongoing`";
+                  * |record| [=prefetch record/is expected to match a URL=] given |url|; and
+                  * |record|'s [=prefetch record/expiry time=] is greater than the [=current high resolution time=] for |navigable|'s [=navigable/active window=],
+                then [=list/append=] |record| to |potentialRecords|.
 
-    <p class="note">The reasoning for setting the cutoff time *after* waiting for a prefetch record to finish is to allow for flexibility in selecting a prefetch to serve the navigation while still guaranteeing falling back to a non-prefetched navigation in the case of repeated prefetch failures. We allow blocking on prefetch attempts which started before we see an attempt fail, but we don't block on subsequent attempts. Notably, this approach: does not finalize the set of prefetches to block on at the start of the navigation; allows a prefetch which started and completed after the navigation started to serve the navigation; avoids the use of a fixed timeout, which would be arbitrary and detrimental to the use of prefetch with slower servers; and blocks on, at most, two nearly-consecutive prefetches before falling back to a conventional navigation.</p>
+            <div class="note" id="note-wait-for-matching-prefetch-record-potential-records">
+              <p>Each iteration of the loop recomputes |potentialRecords|, in a way so that a subsequent iteration's |potentialRecords| will be a subset of the previous iteration's |potentialRecords|. This follows from how |sourceSnapshotParams|'s [=source snapshot params/prefetch records=] is a static snapshot, and none of these three conditions can flip from false to true.</p>
+
+              <p>An equivalent strategy would be to build a single initial instance of |potentialRecords|, and remove items from it as they no longer meet the criteria.</p>
+            </div>
+          1. If |potentialRecords| [=list/is empty=], return null.
+          1. Wait until the [=prefetch record/state=] of any element of |sourceSnapshotParams|'s [=source snapshot params/prefetch records=] changes.
+    1. Return null.
+
+    <p class="note" id="note-wait-for-matching-prefetch-record-subtleties">Because |sourceSnapshotParams|'s [=source snapshot params/prefetch records=] are a snapshot, prefetches that start after a navigation cannot be activated as part of that navigation.</p>
 </div>
 
 <div algorithm>
@@ -385,7 +396,7 @@ The user agent may [=prefetch record/cancel and discard=] records from the [=Doc
         1. Set |finalSandboxFlags| to the [=set/union=] of |targetSnapshotParams|'s [=target snapshot params/sandboxing flags=] and |responsePolicyContainer|'s [=policy container/CSP list=]'s [=CSP-derived sandboxing flags=].
         1. Set |responseOrigin| to the result of [=determining the origin=] given |redirectChainResponse|'s [=response/URL=], |finalSandboxFlags|, |documentState|'s [=document state/initiator origin=], and null.
         1. Set |responseCOOP| to the result of [=obtaining a cross-origin opener policy=] given |redirectChainResponse| and |redirectChainRequest|'s [=request/reserved client=].
-        1. Set |coopEnforcementResult| to the result of [=enforcing a response's cross-origin opener policy=] given |navigable|'s [=active browsing context=], |redirectChainResponse|'s [=response/URL=], |responseOrigin|, |responseCOOP|, |coopEnforcementResult|, and |redirectChainRequest|'s [=request/referrer=].
+        1. <span id="step-activation-time-coop-check"></span>Set |coopEnforcementResult| to the result of [=enforcing a response's cross-origin opener policy=] given |navigable|'s [=active browsing context=], |redirectChainResponse|'s [=response/URL=], |responseOrigin|, |responseCOOP|, |coopEnforcementResult|, and |redirectChainRequest|'s [=request/referrer=].
         1. If |finalSandboxFlags| is not empty and |responseCOOP|'s [=cross-origin opener policy/value=] is "`unsafe-none`", then set |response| to an appropriate [=network error=] and [=iteration/break=].
     1. If |request|'s  [=request/URL=] is not equal to |urlList|[0], then insert |request|'s [=request/URL=] into |urlList| after the 0th [=list/item=].
         <p class="note" id="note-no-vary-search-final-url-impact">In this case, we are navigating to |request|'s [=request/URL=], but fulfilling it with a prefetch that came from a [=response=] whose URL is |urlList|[0], due to [:No-Vary-Search:]. We treat this as if there was a redirect from the 0th response to [=request/URL=]. If, after this insertion, |urlList|'s [=list/size=] is 2, then the resulting {{Document}} will use the navigated-to URL. Otherwise, if the size is greater, then this will have no effect.
@@ -659,7 +670,7 @@ Modify the [=snapshot source snapshot params=] algorithm to set the return value
                 <div class="note">In practice, this means that cross-site prefetches will abandon rather than expose more information about the referrer URL than the origin.</div>
             1. If |request| cannot be fetched given |prefetchRecord|'s [=prefetch record/anonymization policy=] for an [=implementation-defined=] reason, then set |response| to a [=network error=] and [=iteration/break=].
 
-                <div class="note">This explicitly acknowledges that implementations might have additional restrictions. For instance, anonymized traffic might not be possible to some hosts, such as those that are not publicly routable and those that have <a href="https://buettner.github.io/private-prefetch-proxy/traffic-advice.html">traffic advice</a> declining private prefetch traffic.
+                <div class="note">This explicitly acknowledges that implementations might have additional restrictions. For instance, anonymized traffic might not be possible to some hosts, such as those that are not publicly routable and those that have <a href="https://buettner.github.io/private-prefetch-proxy/traffic-advice.html">traffic advice</a> declining private prefetch traffic.</div>
             1. [=list/Append=] a new [=exchange record=] whose [=exchange record/request=] is |request| and [=exchange record/response=] is null to |prefetchRecord|'s [=prefetch record/redirect chain=].
         1. Set |response| to null.
         1. If |fetchController| is null, then set |fetchController| to the result of [=fetching=] |request|, with <i>[=fetch/processEarlyHintsResponse=]</i> set to |processEarlyHintsResponse| as defined below, <i>[=fetch/processResponse=]</i> set to |processResponse| as defined below, and <i>[=fetch/useParallelQueue=]</i> set to true.
@@ -855,6 +866,21 @@ The <dfn>list of sufficiently strict speculative navigation referrer policies</d
     1. Let |global| be |document|'s [=relevant global object=].
     1. [=In parallel=]:
         1. Let |navigationParams| be the result of [=creating navigation params by fetching=] given |request|, |entry|, |document|'s [=node navigable=], |sourceSnapshotParams|, |targetSnapshotParams|, "`other`", null (navigationId), "`navigate`", and <a href="#create-navigation-params-by-fetching-prefetchRecord"><i>prefetchRecord</i></a> |prefetchRecord|.
+
+            <div class="note" id="note-create-navigation-params-navigable">
+              The [=navigable=] used here at prefetch time, i.e., |document|'s [=node navigable=], could potentially be different from the one used at activation time, i.e., the one passed to the [=navigate=] algorithm which eventually calls [=create navigation params from a prefetch record=].
+
+              This is, actually, fine. During the [=navigate|navigation=] that results in prefetch activation, the target navigable will still be used for most of the important checks, which are performed earlier in the process before <a spec=HTML>attempt to populate the history entry's document</a> is called. And, looking at all the ways in which the navigable impacts the prefetch-time [=create navigation params by fetching=]:
+
+              * Setting the prefetch request's [=request/reserved client=] from |document|'s [=node navigable=] is expected. We have to pick one at prefetch time, and this is the only sensible choice.
+
+                (Also, the only potentially-problematic field of the reserved client is its [=environment/target browsing context=]. Since prefetches <a href="#note-prefetch-top-level">prefetches are only supported in top-level traversables</a> and the client's [=environment/execution ready flag=] is left unset, the impact is limited.)
+              * Checks related to [:Cross-Origin-Resource-Policy:] are not applicable, since <a href="#note-prefetch-top-level">prefetches are only supported in top-level traversables</a>.
+              * Checks related to [:Cross-Origin-Opener-Policy:] are skipped during prefetch time and instead <a href="#step-activation-time-coop-check">performed during activation</a>.
+
+              Also note that within this algorithm, |navigationParams| is basically just used as a wrapper for the prefetch response, and not stored anywhere for longer-term use. Thus, the value of |navigationParams|'s [=navigation params/navigable=] does not leak to the rest of the system. In particular, during activation a new [=navigation params=] is created by the [=create navigation params from a prefetch record=] algorithm, which contains the correct target navigable.
+            </div>
+
         1. If |navigationParams|'s [=navigation params/response=] does not [=support prefetch=], then set |navigationParams| to null.
         1. If |prefetchRecord|'s [=prefetch record/had conflicting credentials=] is true, then set |navigationParams| to null.
 
